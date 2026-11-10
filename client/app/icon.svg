@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="AI Workspace">
+  <defs>
+    <linearGradient id="g" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <path d="M31.5 14.5c.6-2 3.4-2 4 0l2.1 7.2a9 9 0 0 0 5.7 5.7l7.2 2.1c2 .6 2 3.4 0 4l-7.2 2.1a9 9 0 0 0-5.7 5.7l-2.1 7.2c-.6 2-3.4 2-4 0l-2.1-7.2a9 9 0 0 0-5.7-5.7l-7.2-2.1c-2-.6-2-3.4 0-4l7.2-2.1a9 9 0 0 0 5.7-5.7l2.1-7.2Z" fill="#fff" fill-opacity=".95"/>
+  <circle cx="47.5" cy="16.5" r="3" fill="#fff" fill-opacity=".7"/>
+  <circle cx="16.5" cy="46.5" r="2.2" fill="#fff" fill-opacity=".55"/>
+</svg>
