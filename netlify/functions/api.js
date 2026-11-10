@@ -1,7 +1,7 @@
 const serverless = require('serverless-http');
-const config = require('../../../server/src/config');
-const { connect } = require('../../../server/src/db');
-const { createApp } = require('../../../server/src/app');
+const config = require('../../server/src/config');
+const { connect } = require('../../server/src/db');
+const { createApp } = require('../../server/src/app');
 
 let handlerPromise = null;
 

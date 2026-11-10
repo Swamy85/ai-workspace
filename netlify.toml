@@ -1,14 +1,18 @@
 [build]
-  base = "client"
-  command = "npm install && npm run build && npm --prefix ../server install && npm --prefix .. install"
-  publish = ".next"
+  command = "npm --prefix client install && npm --prefix server install && npm --prefix client run build"
+  publish = "client/out"
 
 [build.environment]
   NODE_VERSION = "20"
+  # Same-origin API: the UI calls /api, and the redirect below sends it to the
+  # Express app running as a Netlify Function.
   NEXT_PUBLIC_API_URL = "/api"
 
-# Keep the UI and API on the same origin: no CORS, and NEXT_PUBLIC_API_URL
-# can stay a relative path.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Keep UI and API on the same origin: no CORS, no extra environment variables.
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/:splat"
