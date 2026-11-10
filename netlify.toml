@@ -1,0 +1,16 @@
+[build]
+  base = "client"
+  command = "npm install && npm run build && npm --prefix ../server install && npm --prefix .. install"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NEXT_PUBLIC_API_URL = "/api"
+
+# Keep the UI and API on the same origin: no CORS, and NEXT_PUBLIC_API_URL
+# can stay a relative path.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
