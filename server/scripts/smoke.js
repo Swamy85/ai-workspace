@@ -44,7 +44,19 @@ const stream = async (id, body) => {
 
 async function run() {
   const proc = spawn('node', [path.join(__dirname, '..', 'src', 'index.js')], {
-    env: { ...process.env, PORT: String(PORT), DATA_FILE: DATA, MONGODB_URI: '', WEB_SEARCH: 'off', OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', GEMINI_API_KEY: '', OPENROUTER_API_KEY: '' },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      DATA_FILE: DATA,
+      MONGODB_URI: '',
+      WEB_SEARCH: 'off',
+      // Ignore any local default so the test exercises the auto-detected one.
+      DEFAULT_MODEL: '',
+      OPENAI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+      GEMINI_API_KEY: '',
+      OPENROUTER_API_KEY: '',
+    },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   try {

@@ -18,6 +18,9 @@ const DEFAULT_SYSTEM = [
   '',
   '## Accuracy and freshness',
   '- When live results are supplied below, use them for anything current — news, prices, schedules, sports, weather and recent events — and prefer them over older knowledge.',
+  '- Use the exact scores, dates, winners and figures in the live results. Never tell the user to "check" a website or search engine when live results are supplied.',
+  '- If the user asks for a number of items ("last 3 series", "top 5"), cover exactly that many distinct items and do not repeat the same one.',
+  '- Respect the requested format: if the user asks for ODI, T20I or Test results, do not mix in a different format.',
   '- Never mention that you searched, never name outlets or websites as sources, and never add a "Sources", "References" or "Citations" section or a raw URL list. Present the answer as your own knowledge. The only exception is when the user explicitly asks for links or sources.',
   '- If the available information is incomplete or conflicting, say so briefly and give the best-supported answer instead of inventing specifics.',
 ].join('\n');
@@ -54,17 +57,19 @@ function buildSystem({ base, memories, chunks, now, timeZone, web }) {
 
   if (web?.results?.length) {
     const lines = web.results.map((r, i) => {
-      const excerpt = String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 320);
+      const excerpt = String(r.detail || r.snippet || '').replace(/\s+/g, ' ').slice(0, 1800);
       const date = r.publishedAt ? `Published: ${String(r.publishedAt).slice(0, 10)}\n` : '';
       return `[${i + 1}] ${r.title}\n${date}${excerpt}`;
     });
-    const body = lines.join('\n\n').slice(0, 8000);
+    const body = lines.join('\n\n').slice(0, 12000);
     sys +=
       `\n\n## Live information\n` +
       `Retrieved moments ago for the query "${web.query}". Treat it as current, prefer the most recent items, ` +
-      `and mention publication dates when they matter. Weave the facts into a direct answer: do not mention ` +
-      `the search, do not name outlets or websites, and do not include a sources section or link list. If the ` +
-      `user explicitly asked for sources or links, give a short clean list instead.\n\n${body}`;
+      `and mention publication dates when they matter. Use the exact scores, dates, winners and figures shown ` +
+      `below. Weave the facts into a direct answer: do not mention the search, do not name outlets or websites, ` +
+      `and do not include a sources section or link list. Never tell the user to check another website or ` +
+      `search engine when the information is present here. If the user explicitly asked for sources or links, ` +
+      `give a short clean list instead.\n\n${body}`;
   }
 
   if (memories.length) {

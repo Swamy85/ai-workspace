@@ -154,7 +154,8 @@ function parseRss(xml) {
 }
 
 async function fetchRss(query, signal, timeoutMs) {
-  const fresh = /\b(today|latest|current|currently|breaking|now|this (week|month)|recent|yesterday)\b/i.test(query);
+  const fresh = /\b(today|latest|current|currently|breaking|now|this (week|month)|recent|recently|yesterday|last)\b/i.test(query);
+  const cutoff = fresh ? Date.now() - 120 * 24 * 60 * 60 * 1000 : 0;
   const natural = query.replace(/[?"“”]/g, ' ').replace(/\s+/g, ' ').trim();
   const kw = keywords(query);
   const attempts = [natural, kw, fresh && kw ? `${kw} when:2d` : null].filter(Boolean);
@@ -169,7 +170,9 @@ async function fetchRss(query, signal, timeoutMs) {
         headers: { 'User-Agent': UA, Accept: 'application/rss+xml,application/xml,text/xml' },
       });
       if (!res.ok) continue;
-      const items = parseRss(await res.text());
+      const items = parseRss(await res.text()).filter(
+        (it) => !cutoff || !it.publishedAt || Date.parse(it.publishedAt) >= cutoff
+      );
       if (items.length) return items;
     }
     return [];
@@ -292,9 +295,12 @@ async function fetchWeather(query, signal, timeoutMs) {
 }
 
 const NEWSY =
-  /\b(news|headlines?|latest|today|tonight|yesterday|current|currently|breaking|updates?|happened|recent|recently|this (week|month|year)|who won|score|scores|election|price|prices|stock|stocks|market|weather|forecast|release[ds]?|announce[ds]?|2025|2026)\b/i;
+  /\b(news|headlines?|latest|today|tonight|yesterday|current|currently|breaking|updates?|happened|recent|recently|this (week|month|year)|who won|score|scores|scorecards?|election|price|prices|stock|stocks|market|weather|forecast|release[ds]?|announce[ds]?|odi|odis|t20i?s?|cricket|innings|wickets?|world cup|ipl|ranji trophy|wpl|match results?|fixtures?|tournament|20(2[4-9]|3\d))\b/i;
 
 const WEATHER = /\b(weather|forecast|temperature|humidity|rain|raining|snow)\b/i;
+
+/** Cricket/sports phrasing that should be anchored to the current season. */
+const SPORTY = /\b(odi|odis|t20i?s?|cricket|scorecards?|innings|wickets?|world cup|ipl|ranji trophy|wpl|test match)\b/i;
 
 const isNewsy = (q) => NEWSY.test(q);
 const isWeather = (q) => WEATHER.test(q);
@@ -319,7 +325,7 @@ function mergeResults(primary, secondary, limit) {
 
 /** Extract content words for search engines that dislike natural questions. */
 const STOPWORDS = new Set(
-  `what whats who whom whose when where why how is are was were be been being the a an of in on at to for from with and or but do does did can could will would should i me my we our you your it its this that these those give tell show please top latest today now currently current short brief briefly summary summarize links link sources source cite points bullets bullet about any some there their they he she his her has have had won win wins`.split(
+  `what whats who whom whose when where why how is are was were be been being the a an of in on at to for from with and or but do does did can could will would should i me my we our you your it its this that these those give tell show please top last latest today now currently current short brief briefly summary summarize links link sources source cite points bullets bullet about any some there their they he she his her has have had won win wins`.split(
     /\s+/
   )
 );
@@ -349,9 +355,15 @@ function buildQuery(text) {
   }
 
   q = q
+    .replace(/^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:give|tell|show|list|get|send)\s+(?:me\s+)?/i, '')
     .replace(/\b(please|kindly|for me)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Sports questions are almost always about the current season. Anchor the
+  // query to this year so engines return recent results instead of archives.
+  if (SPORTY.test(q) && !/\b(19|20)\d{2}\b/.test(q)) q = `${q} ${new Date().getFullYear()} results`;
+
   return q.slice(0, 200).trim();
 }
 
@@ -403,6 +415,125 @@ async function fetchResults(endpoint, query, signal, timeoutMs) {
   }
 }
 
+/** Reject internal addresses so result pages can't be used to probe the LAN. */
+function isPrivateHost(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || h === '::1') return true;
+    if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Strip a page down to readable text (scripts, styles and tags removed). */
+function readableText(html) {
+  return decodeEntities(
+    String(html)
+      .replace(/<(script|style|noscript|svg|template)\b[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<[^>]+>/g, ' ')
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const SCORE_PATTERN = /\b\d{1,3}\/\d{1,2}\b/g;
+const RESULT_PATTERN = /\b(won by|won the series|series result|full scorecard|scorecard|beat|defeated|result)\b/gi;
+
+/**
+ * Pick the window of a page that best matches the question. Snippets often
+ * omit the actual numbers, so favour text dense in score patterns and result
+ * phrases as well as query keywords.
+ */
+function extractExcerpt(text, query, maxChars) {
+  if (!text) return '';
+  const terms = [...new Set(keywords(query).split(' ').filter((w) => w.length > 2))];
+  const strong = terms.filter((t) => !/^\d{4}$/.test(t) && !/^results?$/.test(t));
+  const wantsOdi = /\bodi\b/i.test(query);
+  const wantsT20 = /\bt20i?s?\b/i.test(query);
+  const wantsTest = /\btest\b/i.test(query);
+  const windowSize = 1000;
+  const step = 500;
+  let best = { score: 0, start: 0 };
+
+  for (let i = 0; i < text.length; i += step) {
+    const slice = text.slice(i, i + windowSize);
+    const lower = slice.toLowerCase();
+    const matches = terms.filter((t) => lower.includes(t)).length;
+    const strongMatches = strong.filter((t) => lower.includes(t)).length;
+    const scores = (slice.match(SCORE_PATTERN) || []).length;
+    // Stay in the format the user asked for; pages often mix T20Is and ODIs.
+    if (wantsOdi && !/\bodi\b/i.test(slice)) continue;
+    if (wantsT20 && !/\bt20i?\b/i.test(slice)) continue;
+    if (wantsTest && !/\btest\b/i.test(slice)) continue;
+    // Ignore windows unrelated to the question — unless they are packed with
+    // score patterns, which is exactly what a results table looks like.
+    if (!matches || (strong.length && !strongMatches && scores < 3)) continue;
+
+    let score = matches * 6 + strongMatches * 4 + scores * 2;
+    score += (slice.match(RESULT_PATTERN) || []).length * 2;
+    if (wantsOdi && /\bodi\b/i.test(slice)) score += 10;
+    if (wantsT20 && /\bt20i?\b/i.test(slice)) score += 10;
+    if (wantsTest && /\btest\b/i.test(slice)) score += 8;
+    // Navigation/boilerplate shouldn't beat real match text.
+    if (/\b(skip to main content|follow us|privacy policy|terms of service|cookie policy|all rights reserved)\b/i.test(slice)) {
+      score -= 10;
+    }
+    if (score > best.score) best = { score, start: i };
+  }
+
+  if (best.score <= 0) return '';
+  return text.slice(best.start, best.start + maxChars).trim();
+}
+
+const PAGE_NOISE =
+  /pitch report|weather|live stream|where to watch|how to watch|tv channel|match time|prediction|fantasy|playing xi|probable|betting|odds|preview/i;
+
+/** Prefer pages whose title/URL actually look like results or scorecards. */
+function pageRelevance(result, query) {
+  const title = result.title || '';
+  const hay = `${title} ${result.url || ''}`.toLowerCase();
+  let score = 0;
+  for (const term of keywords(query).split(' ')) if (term.length > 2 && hay.includes(term)) score += 2;
+  if (/\bscorecards?\b/i.test(query) && /scorecard/.test(hay)) score += 6;
+  if (/\bresults?\b/i.test(query) && /result/.test(hay)) score += 4;
+  if (/\bseries\b/i.test(query) && /series/.test(hay)) score += 4;
+  if (PAGE_NOISE.test(title)) score -= 12;
+  return score;
+}
+
+/** Fetch one result page and return a relevant excerpt, or null on failure. */
+async function readPage(result, query, signal, timeoutMs) {
+  if (!result?.url || isPrivateHost(result.url)) return null;
+  if (/(^|\.)news\.google\.com$/i.test(hostOf(result.url))) return null;
+
+  const { signal: s, dispose } = mergedSignal(signal, timeoutMs);
+  try {
+    const res = await fetch(result.url, {
+      signal: s,
+      headers: {
+        'User-Agent': UA,
+        'Accept-Language': ACCEPT_LANG,
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    });
+    if (!res.ok) return null;
+    const type = res.headers.get('content-type') || '';
+    if (type && !/html|text/i.test(type)) return null;
+    const text = readableText(await res.text());
+    if (text.length < 300) return null;
+    const detail = extractExcerpt(text, query, config.web.pageChars);
+    return detail ? { url: result.url, detail } : null;
+  } catch {
+    return null;
+  } finally {
+    dispose();
+  }
+}
+
 async function searchWeb(query, { signal, maxResults = config.web.maxResults } = {}) {
   const q = buildQuery(query);
   const empty = { query: q, results: [], provider: null, ms: 0, skipped: true };
@@ -428,19 +559,61 @@ async function searchWeb(query, { signal, maxResults = config.web.maxResults } =
     })(),
     newsy ? fetchRss(q, signal, config.web.timeoutMs) : Promise.resolve([]),
     fetchInstantAnswer(q, signal, config.web.timeoutMs),
-    newsy ? Promise.resolve([]) : fetchWikipedia(q, signal, config.web.timeoutMs),
+    // Wikipedia is a cheap fallback when DuckDuckGo or the news feed is thin.
+    fetchWikipedia(q, signal, config.web.timeoutMs),
     weather ? fetchWeather(q, signal, config.web.timeoutMs) : Promise.resolve(null),
   ]);
 
   const instantList = instant ? [instant] : [];
   const liveList = forecast ? [forecast] : [];
   const primary = weather ? [...liveList, ...instantList, ...ddg.results] : newsy ? rss : [...instantList, ...ddg.results];
-  const secondary = weather ? [] : newsy ? ddg.results : wiki;
-  const results = mergeResults(primary, secondary, maxResults);
+  const secondary = weather ? [] : newsy ? [...ddg.results, ...wiki] : wiki;
+  let results = mergeResults(primary, secondary, maxResults);
   const provider =
     [forecast && 'wttr.in', rss.length && 'google-news', instant && 'duckduckgo-instant', ddg.provider, wiki.length && 'wikipedia']
       .filter(Boolean)
       .join('+') || null;
+
+  // Headlines and snippets often omit the actual numbers (scores, tables).
+  // Read the best few direct result pages and attach a relevant excerpt so the
+  // model can answer instead of telling the user to go look it up.
+  // Reading pages costs a few seconds. Only do it when the question actually
+  // needs current facts; general-knowledge answers can use snippets.
+  if (config.web.readPages && (newsy || weather) && results.length) {
+    const candidates = [];
+    const seenUrl = new Set();
+    for (const r of [...ddg.results, ...rss, ...instantList, ...wiki, ...results]) {
+      if (!r?.url || seenUrl.has(r.url) || /(^|\.)news\.google\.com$/i.test(hostOf(r.url))) continue;
+      seenUrl.add(r.url);
+      candidates.push(r);
+    }
+    const ranked = candidates
+      .map((r) => ({ r, score: pageRelevance(r, q) }))
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.r);
+    // Try a few more than we need: many sites are JS-heavy and yield no text.
+    const attempts = ranked.slice(0, config.web.pageResults + 2);
+    const details = await Promise.all(attempts.map((r) => readPage(r, q, signal, config.web.pageTimeoutMs)));
+
+    const byUrl = new Map();
+    for (const d of details) {
+      if (!d || byUrl.size >= config.web.pageResults) continue;
+      byUrl.set(d.url, d.detail);
+    }
+
+    if (byUrl.size) {
+      results = results.map((r) => (byUrl.has(r.url) ? { ...r, detail: byUrl.get(r.url) } : r));
+      // Keep a directly-read page even if the merged list dropped it.
+      for (const [url, detail] of byUrl) {
+        if (results.length >= limit) break;
+        if (results.some((r) => r.url === url)) continue;
+        const src = attempts.find((r) => r.url === url);
+        if (src) results.push({ ...src, detail });
+      }
+      // Pages we could actually read carry the real numbers; surface them first.
+      results.sort((a, b) => Number(!!b.detail) - Number(!!a.detail));
+    }
+  }
 
   return {
     query: q,

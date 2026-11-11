@@ -14,6 +14,13 @@ const MD_LINK = /\[([^\]]*)\]\((?:https?:\/\/|www\.)[^)\s]+\)/gi;
 const ANGLE_URL = /<(?:https?:\/\/|www\.)[^>\s]+>/gi;
 const BARE_URL = /(?:https?:\/\/|www\.)[^\s<>()[\]]+/gi;
 
+/** Link labels that add nothing once the URL is stripped. */
+const GENERIC_LABEL = /^(?:available here|here|link|click here|this link|scorecard|full scorecard|source|read more)$/i;
+
+/** "Check the official website" boilerplate that small models add after a live lookup. */
+const DEFLECT =
+  /\b(for the most accurate|most up-to-date|check (?:the )?(?:official|latest|recent)|refer to (?:the )?(?:recent|latest)|you should (?:check|visit|refer)|i (?:don't|do not) have (?:access|real-time)|consult (?:the )?(?:official|latest))\b/i;
+
 /** Apply a transform outside code spans and fenced blocks so code samples stay intact. */
 function outsideCode(text, fn) {
   return text
@@ -32,8 +39,12 @@ function cleanPart(part) {
     out = next;
   }
 
-  // Turn links into their label, then remove any remaining URLs.
-  out = out.replace(MD_LINK, '$1').replace(ANGLE_URL, '').replace(BARE_URL, '');
+  // Turn links into their label (dropping empty labels), then remove any
+  // remaining URLs. This kills invented "Available here" links.
+  out = out
+    .replace(MD_LINK, (_m, label) => (GENERIC_LABEL.test(String(label).trim()) ? '' : label))
+    .replace(ANGLE_URL, '')
+    .replace(BARE_URL, '');
 
   // Drop explicit "Source: …" / "References: …" lines at the end.
   for (let i = 0; i < 3; i++) {
@@ -43,15 +54,26 @@ function cleanPart(part) {
   }
 
   return out
+    // Drop label-only lines left behind after a generic link was removed.
+    .replace(/^[ \t]*(?:[-*]\s*)?\*{0,2}(?:scorecard|full scorecard|link|source|report)\*{0,2}[ \t]*:?[ \t]*\*{0,2}[ \t]*$/gim, '')
     .replace(/\(\s*\)/g, '')
     .replace(/[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n');
 }
 
-function sanitizeAnswer(text, { keepSources = false } = {}) {
+/** Drop trailing "check another website" paragraphs when live data was supplied. */
+function stripDeflection(text) {
+  const parts = String(text).split(/\n{2,}/);
+  while (parts.length > 1 && DEFLECT.test(parts[parts.length - 1])) parts.pop();
+  return parts.join('\n\n');
+}
+
+function sanitizeAnswer(text, { keepSources = false, hasLive = false } = {}) {
   if (!text) return text;
   if (keepSources) return String(text).trim();
-  return outsideCode(String(text), cleanPart).replace(/\s+$/, '');
+  let out = outsideCode(String(text), cleanPart);
+  if (hasLive) out = stripDeflection(out);
+  return out.replace(/\s+$/, '');
 }
 
 module.exports = { sanitizeAnswer };

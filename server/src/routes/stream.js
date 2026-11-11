@@ -107,7 +107,12 @@ module.exports = (store) => async (req, res) => {
     files,
     query: userText,
     history: messages,
-    contextTokens: clampNum(body.contextTokens, 1000, 1_000_000, config.limits.defaultContextTokens),
+    // Never ask for more context than the resolved model can actually serve
+    // (important for local Ollama models with a pinned num_ctx).
+    contextTokens: Math.min(
+      clampNum(body.contextTokens, 1000, 1_000_000, config.limits.defaultContextTokens),
+      resolved.contextWindow || 1_000_000
+    ),
     replyReserve: config.limits.replyReserveTokens,
     web,
     timeZone: timeZoneFrom(body.timeZone),
@@ -174,7 +179,7 @@ module.exports = (store) => async (req, res) => {
   const stopped = abort.signal.aborted;
   // Only strip links when the user didn't explicitly ask for sources.
   const wantsSources = /\b(links?|urls?|sources?|references?|citations?)\b/i.test(userText);
-  let answer = sanitizeAnswer(full, { keepSources: wantsSources });
+  let answer = sanitizeAnswer(full, { keepSources: wantsSources, hasLive: ctx.webSources.length > 0 });
   if (!answer && full) answer = full.trim();
   let assistant = null;
   if (answer) {

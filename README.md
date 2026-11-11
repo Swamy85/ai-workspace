@@ -22,6 +22,25 @@ Other commands: `npm test` (29-check API smoke test, no keys needed) · `npm run
 
 For MongoDB: `docker compose up -d`, then set `MONGODB_URI=mongodb://localhost:27017/ai-workspace` in `server/.env`. If Mongo is unreachable the server logs a warning and uses the file store.
 
+### Using a local Ollama model
+
+Install [Ollama](https://ollama.com) and pull a model, for example `ollama pull qwen2.5:3b`. The server discovers running local models from `OLLAMA_BASE_URL` (default `http://localhost:11434`) and lists them in the picker as `<name> (local)`. To make one the default, set it in `server/.env`:
+
+```bash
+OLLAMA_BASE_URL=http://localhost:11434
+DEFAULT_MODEL=ollama:qwen2.5:3b
+# Optional tuning (defaults shown):
+OLLAMA_NUM_CTX=8192      # context window
+OLLAMA_NUM_PREDICT=768   # max tokens per reply (lower = faster)
+OLLAMA_KEEP_ALIVE=30m    # keep the model loaded between requests
+```
+
+The `DEFAULT_MODEL` value uses the same `provider:model` id shown in the model picker. If that model isn't available (for example Ollama isn't running), the server falls back to the next usable model.
+
+Local models are served through Ollama's native `/api/chat` API so the app can set `num_ctx`. Raise `OLLAMA_NUM_CTX` if you have spare RAM and want longer chats; lower it on memory-constrained machines. The app never asks for more context than the model advertises.
+
+Small CPU-only models are slow on long prompts. If replies feel sluggish, lower `OLLAMA_NUM_PREDICT`, or disable page reading (`WEB_PAGE_READ=off`) so less text is sent to the model. The first request after starting Ollama is the slowest because the model has to load; `OLLAMA_KEEP_ALIVE` avoids repeating that cost.
+
 ## Features
 
 | Area | What you get |
@@ -31,7 +50,7 @@ For MongoDB: `docker compose up -d`, then set `MONGODB_URI=mongodb://localhost:2
 | **Theming** | Light/dark toggle (follows system on first visit, persisted, no flash on load) |
 | **Session control** | Per-chat system instructions (with presets), temperature, context-token budget, live context usage meter |
 | **Models** | **Free GPT-OSS 20B (no key needed)**, OpenAI, Anthropic, Gemini, OpenRouter, Ollama (auto-discovered), plus an offline demo model. Unconfigured models are shown disabled with a hint |
-| **Live web** | Keyless DuckDuckGo search before each answer, with the current date/time. Results are used privately — no source list is shown under replies. Globe toggle in the composer, switch in Context settings |
+| **Live web** | Keyless DuckDuckGo + Google News search before each answer, plus a read of the top result pages for real scores, tables and figures, with the current date/time. Results are used privately — no source list is shown under replies. Globe toggle in the composer, switch in Context settings |
 | **Streaming** | SSE token streaming, live "Searching the web…" status, reasoning-model "Thinking" panel, stop button, partial replies are saved, regenerate |
 | **Context** | History trimmed oldest-first to fit the budget (newest message always kept) |
 | **Memory** | Long-term notes injected into every chat; toggle per note or globally; save any reply as a note |
@@ -91,21 +110,23 @@ Every message is optionally grounded with live lookups before the model runs:
    - **DuckDuckGo Instant Answer** — direct factual abstracts
    - **Wikipedia** — encyclopedic fallback with plain-text intros
    - **wttr.in** — live weather and a short forecast when you ask about weather
-3. Results, publication dates and the visitor's current date/time are injected into the system prompt; the model is told to prefer them and write a direct answer without mentioning the search or adding link lists.
-4. Sources are kept in `meta.webSources` for diagnostics and saved with the message, but the UI does not display them.
+3. Snippets alone often omit the actual numbers, so the server also fetches the top few direct result pages (`WEB_PAGE_RESULTS`, default 3) and extracts the most relevant passage — the part dense in query terms, scores and result phrases. This is what lets the model quote real scorecards instead of telling you to check a website.
+4. Results, publication dates, page excerpts and the visitor's current date/time are injected into the system prompt; the model is told to use the exact figures and write a direct answer without mentioning the search or adding link lists.
+5. Sources are kept in `meta.webSources` for diagnostics and saved with the message, but the UI does not display them.
 
-Disable it globally with `WEB_SEARCH=off`, or per browser with the globe button. Tune with `WEB_SEARCH_RESULTS`, `WEB_SEARCH_TIMEOUT_MS` and `WEB_SEARCH_ENDPOINT` (any DuckDuckGo-HTML-compatible endpoint, e.g. a SearXNG instance). Greetings and one-word messages skip the lookup. If every source fails, the chat still works from the model's own knowledge.
+Disable it globally with `WEB_SEARCH=off`, or per browser with the globe button. Page reading can be turned off separately with `WEB_PAGE_READ=off`. Tune with `WEB_SEARCH_RESULTS`, `WEB_SEARCH_TIMEOUT_MS`, `WEB_SEARCH_ENDPOINT` (any DuckDuckGo-HTML-compatible endpoint, e.g. a SearXNG instance), `WEB_PAGE_RESULTS`, `WEB_PAGE_TIMEOUT_MS` and `WEB_PAGE_CHARS`. Greetings and one-word messages skip the lookup. If every source fails, the chat still works from the model's own knowledge.
 
 ## Adding a provider or model
 
 - **New model on an existing provider:** add it to `STATIC_MODELS` in `server/src/providers/index.js`, or set `EXTRA_MODELS` in `.env`. Any `provider:model` id works, even if it isn't in the catalog.
+- **Default model:** set `DEFAULT_MODEL=provider:model` in `server/.env` (e.g. `ollama:qwen2.5:3b`). Without it the server picks a configured paid model, then the free hosted model, then a local one.
 - **OpenAI-compatible endpoint** (LM Studio, vLLM, Groq, …): copy the `openrouter` entry in `providers/index.js` and change the base URL/key.
 - **Different API:** add `providers/<name>.js` exporting `async *stream({ model, system, messages, temperature, signal })` that yields text deltas, then register it in `adapters`.
 
 ## Design notes & known limits
 
 - **Free model:** the keyless Pollinations tier is shared and rate-limited; if a reply is slow, regenerate, or set `POLLINATIONS_API_KEY` / another provider key for priority. If an upstream returns an empty stream, the server retries once and then surfaces a clear error.
-- **Web search is snippet-based.** It grounds answers without an API key but does not crawl full articles (Google News links resolve through a redirect). Plug in a paid search API in `services/websearch.js` for stricter citation needs.
+- **Web search is keyless and best-effort.** It reads the top few direct result pages, but JavaScript-heavy sites, paywalls and Google News redirects may not yield text. For guaranteed structured data (e.g. a live sports feed), plug a proper API into `services/websearch.js`.
 - **Token counting is an estimate** (~4 chars/token, `services/tokens.js`). Swap in tiktoken or a provider counter for exact budgets.
 - **RAG is lexical (BM25)**, not semantic, so it needs no embedding API. `retrieve()` in `services/rag.js` is the seam to plug in a vector store.
 - **PDFs** must contain a text layer; scanned PDFs need OCR first. Images aren't supported yet.

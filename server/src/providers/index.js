@@ -24,11 +24,8 @@ const adapters = {
     getApiKey: () => config.providers.openrouter.apiKey,
     extraHeaders: { 'X-Title': 'AI Workspace' },
   }),
-  ollama: createOpenAICompat({
-    label: 'Ollama',
-    getBaseUrl: () => `${config.providers.ollama.baseUrl.replace(/\/$/, '')}/v1`,
-    getApiKey: () => '',
-  }),
+  // Native Ollama API so we can set num_ctx (the OpenAI shim ignores it).
+  ollama: require('./ollama'),
 };
 
 /** Static catalog. IDs are `provider:model`; edit freely or use EXTRA_MODELS. */
@@ -115,13 +112,22 @@ async function pollinationsModels() {
   return models;
 }
 
+/** Native context windows for common local families (Ollama does not report them). */
+function localContextWindow(name = '') {
+  const n = name.toLowerCase();
+  if (n.startsWith('qwen2.5') || n.startsWith('qwen3')) return 32768;
+  if (n.startsWith('llama3.1') || n.startsWith('llama3.2') || n.startsWith('llama3.3')) return 131072;
+  if (n.startsWith('mistral') || n.startsWith('gemma')) return 32768;
+  return 8192;
+}
+
 let ollamaCache = { at: 0, models: [] };
 async function ollamaModels() {
   if (Date.now() - ollamaCache.at < 15000) return ollamaCache.models;
   let models = [];
   try {
     const res = await fetch(`${config.providers.ollama.baseUrl.replace(/\/$/, '')}/api/tags`, {
-      signal: AbortSignal.timeout(800),
+      signal: AbortSignal.timeout(2500),
     });
     if (res.ok) {
       const json = await res.json();
@@ -129,8 +135,10 @@ async function ollamaModels() {
         id: `ollama:${m.name}`,
         provider: 'ollama',
         label: `${m.name} (local)`,
-        contextWindow: 8192,
+        // Report the window we actually serve, not just the model's native max.
+        contextWindow: Math.min(localContextWindow(m.name), config.providers.ollama.numCtx),
         available: true,
+        local: true,
       }));
     }
   } catch {
@@ -171,9 +179,11 @@ async function resolveModel(id) {
 
 const DEFAULT_MODEL_ID = 'pollinations:openai-fast';
 
-/** Prefer a configured paid/local model, then the free hosted one, then the demo. */
+/** Prefer an explicitly configured model, then a paid/local one, then free, then demo. */
 async function defaultModelId() {
   const models = await listModels();
+  const preferred = config.defaultModel && models.find((m) => m.id === config.defaultModel && m.available);
+  if (preferred) return preferred.id;
   const paid = models.find((m) => !['mock', 'pollinations', 'ollama'].includes(m.provider) && m.available);
   const free = models.find((m) => m.provider === 'pollinations' && m.available);
   const local = models.find((m) => m.provider === 'ollama' && m.available);
